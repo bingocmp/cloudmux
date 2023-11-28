@@ -175,6 +175,8 @@ type ProviderConfig struct {
 
 	AliyunResourceGroupIds []string
 
+	ManagerProviderConfig *ProviderConfig
+
 	UpdatePermission func(service, permission string)
 }
 
@@ -303,6 +305,7 @@ type ICloudProvider interface {
 
 	GetEnrollmentAccounts() ([]SEnrollmentAccount, error)
 	CreateSubscription(SubscriptionCreateInput) error
+	DeleteSubscription(SubscriptionDeleteInput) error
 
 	GetSamlEntityId() string
 
@@ -564,6 +567,10 @@ func (self *SBaseProvider) GetEnrollmentAccounts() ([]SEnrollmentAccount, error)
 
 func (self *SBaseProvider) CreateSubscription(SubscriptionCreateInput) error {
 	return ErrNotImplemented
+}
+
+func (self *SBaseProvider) DeleteSubscription(SubscriptionDeleteInput) error {
+	return nil
 }
 
 func (self *SBaseProvider) GetICloudDnsZones() ([]ICloudDnsZone, error) {

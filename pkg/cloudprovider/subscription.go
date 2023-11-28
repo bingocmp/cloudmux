@@ -14,10 +14,18 @@
 
 package cloudprovider
 
+type SubscriptionDeleteInput struct {
+	SubAccountId string
+}
+
 type SubscriptionCreateInput struct {
 	Name                string
 	EnrollmentAccountId string
 	OfferType           string
+
+	SubAccountId   string
+	SubAccountName string
+	DefaultProject string
 }
 
 type SEnrollmentAccount struct {

@@ -26,6 +26,20 @@ type SLoadbalancerBackendGroup struct {
 	// aws
 	ListenPort int    // 后端端口
 	VpcId      string // vpc id
+
+	// bingo
+	TargetType                 string
+	HealthCheckEnabled         bool
+	HealthCheckIntervalSeconds int
+	HealthCheckMethod          string
+	HealthCheckPath            string
+	HealthCheckPort            string
+	HealthCheckProtocol        string
+	HealthCheckTimeoutSeconds  int
+	HttpCode                   string
+	HealthyThresholdCount      int
+	UnhealthyThresholdCount    int
+	Description                string
 }
 
 type SLoadbalancerHealthCheck struct {

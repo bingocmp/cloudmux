@@ -16,7 +16,7 @@ package compute
 
 const (
 	NETWORK_TYPE_GUEST = "guest"
-	NETWORK_TYPE_EIP   = "elasticip"
+	NETWORK_TYPE_EIP   = "eip"
 
 	NETWORK_STATUS_PENDING     = "pending"
 	NETWORK_STATUS_AVAILABLE   = "available"

@@ -21,4 +21,7 @@ type DiskCreateConfig struct {
 	Iops       int
 	Throughput int
 	ProjectId  string
+	ZoneId     string
+	NodeId     string
+	SnapshotId string
 }

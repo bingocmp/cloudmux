@@ -104,7 +104,8 @@ type SDiskInfo struct {
 	Iops              int
 	Name              string
 	// aws gp3 only
-	Throughput int
+	Throughput         int
+	SnapshotExternalId string
 }
 
 type GuestDiskCreateOptions struct {
