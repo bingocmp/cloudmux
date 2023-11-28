@@ -25,7 +25,7 @@ func init() {
 		Id string
 	}
 	shellutils.R(&VpcListOptions{}, "vpc-list", "List vpcs", func(cli *bingocloud.SRegion, args *VpcListOptions) error {
-		vpcs, err := cli.GetVpcs(args.Id)
+		vpcs, err := cli.GetVpcs()
 		if err != nil {
 			return err
 		}

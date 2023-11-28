@@ -14,12 +14,6 @@
 
 package bingocloud
 
-import (
-	"yunion.io/x/pkg/errors"
-
-	"yunion.io/x/cloudmux/pkg/cloudprovider"
-)
-
 type BingoTags struct {
 	TagSet []struct {
 		Key   string
@@ -40,5 +34,14 @@ func (self *BingoTags) GetSysTags() map[string]string {
 }
 
 func (self *BingoTags) SetTags(tags map[string]string, replace bool) error {
-	return errors.Wrap(cloudprovider.ErrNotImplemented, "SetTags")
+	if replace {
+		self.TagSet = self.TagSet[:0]
+	}
+	for k, v := range tags {
+		self.TagSet = append(self.TagSet, struct {
+			Key   string
+			Value string
+		}{Key: k, Value: v})
+	}
+	return nil
 }

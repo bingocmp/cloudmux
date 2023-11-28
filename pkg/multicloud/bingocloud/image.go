@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/imagetools"
 	"yunion.io/x/pkg/util/rbacscope"
@@ -99,14 +100,19 @@ func (self *SImage) GetSizeGB() int64 {
 }
 
 func (self *SImage) GetImageType() cloudprovider.TImageType {
-	if self.IsPublic {
-		return cloudprovider.ImageTypeSystem
-	}
-	return cloudprovider.ImageTypeCustomized
+	return cloudprovider.ImageTypeSystem
 }
 
 func (self *SImage) GetImageStatus() string {
 	return "active"
+}
+
+func (self *SImage) Refresh() error {
+	img, err := self.cache.region.GetImageById(self.ImageId)
+	if err != nil {
+		return err
+	}
+	return jsonutils.Update(self, img)
 }
 
 func (i *SImage) getNormalizedImageInfo() *imagetools.ImageInfo {
@@ -146,7 +152,7 @@ func (i *SImage) GetBios() cloudprovider.TBiosType {
 }
 
 func (self *SImage) GetMinOsDiskSizeGb() int {
-	return 4
+	return int(self.GetSizeGB())
 }
 
 func (self *SImage) GetMinRamSizeMb() int {
@@ -169,7 +175,7 @@ func (self *SImage) GetPublicScope() rbacscope.TRbacScope {
 	if self.Shared == "true" {
 		return rbacscope.ScopeSystem
 	}
-	return rbacscope.ScopeDomain
+	return rbacscope.ScopeNone
 }
 
 func (self *SImage) GetSubImages() []cloudprovider.SSubImage {
@@ -197,6 +203,11 @@ func (self *SRegion) GetImages(id, nextToken string) ([]SImage, string, error) {
 	if len(nextToken) > 0 {
 		params["NextToken"] = nextToken
 	}
+	//idx := 1
+	//params[fmt.Sprintf("Filter.%d.Name", idx)] = "owner-id"
+	//params[fmt.Sprintf("Filter.%d.Value.1", idx)] = self.client.user
+	//idx++
+
 	resp, err := self.invoke("DescribeImages", params)
 	if err != nil {
 		return nil, "", err
@@ -217,6 +228,15 @@ func (self *SRegion) GetImageById(id string) (*SImage, error) {
 	if len(imgs) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, id)
 	}
+
+	for i := range imgs {
+		storage, err := self.GetIStorageById(imgs[i].StorageId)
+		if err != nil {
+			return nil, err
+		}
+		imgs[i].cache = &SStoragecache{storageId: storage.GetId(), storageName: storage.GetName(), region: self}
+	}
+
 	return &imgs[0], nil
 }
 
@@ -250,7 +270,8 @@ func (self *SStoragecache) GetIImageById(id string) (cloudprovider.ICloudImage, 
 		return nil, err
 	}
 	for i := range images {
-		if images[i].GetGlobalId() == id && images[i].StorageId == self.storageId {
+		// && images[i].StorageId == self.storageId
+		if images[i].GetGlobalId() == id {
 			images[i].cache = self
 			return &images[i], nil
 		}

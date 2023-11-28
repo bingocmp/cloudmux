@@ -21,7 +21,8 @@ import (
 	"yunion.io/x/pkg/util/secrules"
 )
 
-type IPPermissions struct {
+type SSecurityGroupRule struct {
+	group     *SSecurityGroup
 	direction secrules.TSecurityRuleDirection
 
 	BoundType   string `json:"boundType"`
@@ -41,22 +42,22 @@ type IPPermissions struct {
 	ToPort       int    `json:"toPort"`
 }
 
-func (self *IPPermissions) GetGlobalId() string {
+func (self *SSecurityGroupRule) GetGlobalId() string {
 	return self.PermissionId
 }
 
-func (self *IPPermissions) GetDescription() string {
+func (self *SSecurityGroupRule) GetDescription() string {
 	return self.Description
 }
 
-func (self *IPPermissions) GetAction() secrules.TSecurityRuleAction {
+func (self *SSecurityGroupRule) GetAction() secrules.TSecurityRuleAction {
 	if self.Policy == "DROP" {
 		return secrules.SecurityRuleDeny
 	}
 	return secrules.SecurityRuleAllow
 }
 
-func (self *IPPermissions) GetProtocol() string {
+func (self *SSecurityGroupRule) GetProtocol() string {
 	protocol := secrules.PROTO_ANY
 	if self.IPProtocol != "all" {
 		protocol = self.IPProtocol
@@ -64,18 +65,21 @@ func (self *IPPermissions) GetProtocol() string {
 	return protocol
 }
 
-func (self *IPPermissions) GetPorts() string {
-	if self.GetProtocol() == secrules.PROTO_TCP || self.GetProtocol() == secrules.PROTO_UDP {
+func (self *SSecurityGroupRule) GetPorts() string {
+	if self.FromPort > 0 && self.ToPort > 0 {
+		if self.FromPort == self.ToPort {
+			return fmt.Sprintf("%d", self.FromPort)
+		}
 		return fmt.Sprintf("%d-%d", self.FromPort, self.ToPort)
 	}
 	return ""
 }
 
-func (self *IPPermissions) GetPriority() int {
+func (self *SSecurityGroupRule) GetPriority() int {
 	return 0
 }
 
-func (self *IPPermissions) GetCIDRs() []string {
+func (self *SSecurityGroupRule) GetCIDRs() []string {
 	nets := []string{}
 	for _, ip := range self.IPRanges {
 		nets = append(nets, ip.CIDRIP)
@@ -83,14 +87,22 @@ func (self *IPPermissions) GetCIDRs() []string {
 	return nets
 }
 
-func (self *IPPermissions) GetDirection() secrules.TSecurityRuleDirection {
+func (self *SSecurityGroupRule) GetDirection() secrules.TSecurityRuleDirection {
 	return self.direction
 }
 
-func (self *IPPermissions) Delete() error {
-	return cloudprovider.ErrNotImplemented
+func (self *SSecurityGroupRule) Delete() error {
+	return self.group.region.DeleteSecurityGroupRule(self)
 }
 
-func (self *IPPermissions) Update(opts *cloudprovider.SecurityGroupRuleUpdateOptions) error {
-	return cloudprovider.ErrNotImplemented
+func (self *SSecurityGroupRule) Update(opts *cloudprovider.SecurityGroupRuleUpdateOptions) error {
+	self.group.region.DeleteSecurityGroupRule(self)
+	return self.group.region.CreateSecurityGroupRules(self.group.GroupId, &cloudprovider.SecurityGroupRuleCreateOptions{
+		Desc:      opts.Desc,
+		Protocol:  opts.Protocol,
+		Ports:     opts.Ports,
+		Direction: self.GetDirection(),
+		CIDR:      opts.CIDR,
+		Action:    opts.Action,
+	})
 }

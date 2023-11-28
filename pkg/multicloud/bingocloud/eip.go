@@ -16,7 +16,11 @@ package bingocloud
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
+	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/cloudmux/pkg/apis/compute"
@@ -40,6 +44,7 @@ type SEip struct {
 	PublicIp     string
 	SubnetId     string
 	VpcId        string
+	Mode         string
 }
 
 func (self *SEip) GetId() string {
@@ -85,17 +90,42 @@ func (self *SEip) GetInternetChargeType() string {
 	return api.EIP_CHARGE_TYPE_BY_BANDWIDTH
 }
 
+func (self *SEip) Refresh() error {
+	newEip, err := self.region.GetIEipById(self.GetId())
+	if err != nil {
+		return err
+	}
+	return jsonutils.Update(self, &newEip)
+}
+
 func (self *SEip) Delete() error {
-	return cloudprovider.ErrNotImplemented
+	params := map[string]string{}
+	params["PublicIp"] = self.PublicIp
+
+	_, err := self.region.invoke("ReleaseAddress", params)
+	return err
 }
 
 func (self *SEip) Associate(conf *cloudprovider.AssociateConfig) error {
+	nics, err := self.region.GetInstanceNics(conf.InstanceId)
+	if err != nil {
+		return err
+	}
+	if len(nics) == 0 {
+		return errors.Wrapf(cloudprovider.ErrNotFound, "region.GetInstanceNics %v", conf.InstanceId)
+	}
+
 	params := map[string]string{}
 	params["PublicIp"] = self.PublicIp
 	params["InstanceId"] = conf.InstanceId
+	params["NetworkInterfaceId"] = nics[0].NetworkInterfaceId
 
-	_, err := self.region.invoke("AssociateAddress", params)
-	return err
+	_, err = self.region.invoke("AssociateAddress", params)
+	//参数错误: 该IP所属VPC不支持NAT模式 : vpc-0FF58A41, 错误编码: 106496
+	if err != nil {
+		log.Warningln("AssociateAddress", err)
+	}
+	return nil
 }
 
 func (self *SEip) Dissociate() error {
@@ -103,7 +133,11 @@ func (self *SEip) Dissociate() error {
 	params["PublicIp"] = self.PublicIp
 
 	_, err := self.region.invoke("DisassociateAddress", params)
-	return err
+	//参数错误: 只有用作NAT的弹性IP才能解绑, 错误编码: 106575
+	if err != nil {
+		log.Warningln("DisassociateAddress", err)
+	}
+	return nil
 }
 
 func (self *SEip) ChangeBandwidth(bw int) error {
@@ -121,7 +155,7 @@ func (self *SEip) GetStatus() string {
 func (self *SRegion) GetEips(ip, instanceId, nextToken string) ([]SEip, string, error) {
 	params := map[string]string{}
 	if len(ip) > 0 {
-		params["PublicIp"] = ip
+		params["PublicIp.1"] = ip
 	}
 	if len(nextToken) > 0 {
 		params["NextToken"] = nextToken
@@ -131,6 +165,10 @@ func (self *SRegion) GetEips(ip, instanceId, nextToken string) ([]SEip, string, 
 	if len(instanceId) > 0 {
 		params[fmt.Sprintf("Filter.%d.Name", idx)] = "instance-id"
 		params[fmt.Sprintf("Filter.%d.Value.1", idx)] = instanceId
+		idx++
+	} else {
+		params[fmt.Sprintf("Filter.%d.Name", idx)] = "owner-id"
+		params[fmt.Sprintf("Filter.%d.Value.1", idx)] = self.client.user
 		idx++
 	}
 
@@ -144,7 +182,65 @@ func (self *SRegion) GetEips(ip, instanceId, nextToken string) ([]SEip, string, 
 	}{}
 	_ = resp.Unmarshal(&ret)
 
-	return ret.AddressesSet, ret.NextToken, nil
+	var floatingRet []SEip
+	for _, eip := range ret.AddressesSet {
+		if strings.Contains(strings.ToLower(eip.AddressType), "virtualip") {
+			continue
+		}
+
+		if eip.InstanceId == "" && eip.CanAssociate {
+			floatingRet = append(floatingRet, eip)
+			continue
+		}
+
+		if eip.InstanceId != "" {
+			nics, err := self.GetInstanceNics(eip.InstanceId)
+			if err != nil {
+				return nil, "", err
+			}
+			isSecondaryIp := false
+			for i := range nics {
+				if eip.PublicIp == nics[i].PrivateIPAddress {
+					isSecondaryIp = true
+					break
+				}
+				for j := range nics[i].PrivateIPAddressesSet {
+					if nics[i].PrivateIPAddressesSet[j].PrivateIPAddress == eip.PublicIp && nics[i].PrivateIPAddressesSet[j].PrivateIPAddress == nics[i].PrivateIPAddressesSet[j].Association.PublicIp {
+						isSecondaryIp = true
+						break
+					}
+				}
+			}
+			if !isSecondaryIp {
+				floatingRet = append(floatingRet, eip)
+			}
+		}
+	}
+
+	return floatingRet, ret.NextToken, nil
+}
+
+func (self *SRegion) CreateEIP(eip *cloudprovider.SEip) (cloudprovider.ICloudEIP, error) {
+	params := map[string]string{}
+	if len(eip.NetworkExternalId) > 0 {
+		params["SubnetId"] = eip.NetworkExternalId
+	}
+	if eip.BandwidthMbps > 0 {
+		params["Bandwidth"] = strconv.Itoa(eip.BandwidthMbps)
+	}
+	if len(eip.Ip) > 0 {
+		params["DesiredAddress"] = eip.Ip
+	}
+	resp, err := self.invoke("AllocateAddress", params)
+	if err != nil {
+		return nil, errors.Wrapf(err, "AllocateAddress")
+	}
+	var ip string
+	err = resp.Unmarshal(&ip, "publicIp")
+	if err != nil {
+		return nil, errors.Wrapf(err, "AllocateAddress")
+	}
+	return self.GetIEipById(ip)
 }
 
 func (self *SRegion) GetIEips() ([]cloudprovider.ICloudEIP, error) {

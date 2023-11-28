@@ -18,7 +18,9 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/cloudmux/pkg/apis/compute"
@@ -60,6 +62,8 @@ type SDisk struct {
 	StorageId        string          `json:"storageId"`
 	VolumeId         string          `json:"volumeId"`
 	VolumeName       string          `json:"volumeName"`
+
+	ImageId string `json:"imageId"`
 }
 
 func (self *SDisk) GetISnapshots() ([]cloudprovider.ICloudSnapshot, error) {
@@ -118,7 +122,13 @@ func (self *SDisk) GetIsAutoDelete() bool {
 }
 
 func (self *SDisk) GetTemplateId() string {
-	return ""
+	if self.ImageId == "" && len(self.AttachmentSet) > 0 {
+		instances, _, _ := self.storage.cluster.region.GetInstances(self.AttachmentSet[0].InstanceId, "", 1, "")
+		if instances != nil {
+			self.ImageId = instances[0].InstancesSet.ImageId
+		}
+	}
+	return self.ImageId
 }
 
 func (self *SDisk) GetDiskType() string {
@@ -164,7 +174,18 @@ func (self *SDisk) Delete(ctx context.Context) error {
 }
 
 func (self *SDisk) CreateISnapshot(ctx context.Context, name string, desc string) (cloudprovider.ICloudSnapshot, error) {
-	snapshotId, err := self.storage.cluster.region.createSnapshot(self.VolumeId, name, desc)
+	var storageId string
+	var rootInfo map[string]string
+
+	if obj := ctx.Value("params"); obj != nil {
+		if obj, _ := obj.(*jsonutils.JSONDict).Get("root_info"); obj != nil {
+			obj.(jsonutils.JSONObject).Unmarshal(&rootInfo)
+		}
+		if obj, _ := obj.(*jsonutils.JSONDict).Get("storage_id"); obj != nil {
+			obj.(jsonutils.JSONObject).Unmarshal(&storageId)
+		}
+	}
+	snapshotId, err := self.storage.cluster.region.createSnapshot(self.VolumeId, storageId, name, desc, rootInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -176,15 +197,81 @@ func (self *SDisk) GetExtSnapshotPolicyIds() ([]string, error) {
 }
 
 func (self *SDisk) Resize(ctx context.Context, newSizeMB int64) error {
-	return cloudprovider.ErrNotImplemented
+	params := map[string]string{}
+	params["VolumeId"] = self.VolumeId
+	params["Size"] = strconv.FormatInt(newSizeMB/1024, 10)
+
+	_, err := self.storage.cluster.region.invoke("ResizeVolume", params)
+	return err
 }
 
 func (self *SDisk) Reset(ctx context.Context, snapshotId string) (string, error) {
-	return "", cloudprovider.ErrNotImplemented
+	newDisk, err := self.storage.CreateIDisk(&cloudprovider.DiskCreateConfig{
+		Name:       self.VolumeName,
+		SizeGb:     self.Size,
+		Desc:       self.Description,
+		ZoneId:     self.AvailabilityZone,
+		NodeId:     self.NodeId,
+		SnapshotId: snapshotId,
+	})
+	if err != nil {
+		return "", err
+	}
+	err = cloudprovider.WaitStatus(newDisk, api.DISK_READY, 5*time.Second, 3600*time.Second)
+	if err != nil {
+		return "", errors.Wrapf(err, "cloudprovider.WaitStatus")
+	}
+	for _, attachment := range self.AttachmentSet {
+		instances, _, err := self.storage.cluster.region.GetInstances(attachment.InstanceId, "", 1, "")
+		if err != nil {
+			return "", err
+		}
+		if len(instances) == 0 {
+			break
+		}
+		instance := instances[0]
+
+		{
+			params := map[string]string{}
+			params["VolumeId"] = self.VolumeId
+			params["InstanceId"] = instance.GetId()
+			_, err = self.storage.cluster.region.invoke("DetachVolume", params)
+			if err != nil {
+				return "", err
+			}
+		}
+		{
+			var deviceNames []string
+			for _, device := range instance.InstancesSet.BlockDeviceMapping {
+				deviceNames = append(deviceNames, device.DeviceName)
+			}
+			deviceName, err := nextDeviceName(deviceNames)
+			if err != nil {
+				return "", errors.Wrap(err, "nextDeviceName")
+			}
+			params := map[string]string{}
+			params["VolumeId"] = newDisk.GetId()
+			params["InstanceId"] = instance.GetId()
+			params["Device"] = deviceName
+			_, err = self.storage.cluster.region.invoke("AttachVolume", params)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	return newDisk.GetId(), self.Delete(ctx)
 }
 
 func (self *SDisk) Rebuild(ctx context.Context) error {
 	return cloudprovider.ErrNotImplemented
+}
+
+func (self *SDisk) Refresh() error {
+	newDisk, err := self.storage.cluster.region.GetDisk(self.GetGlobalId())
+	if err != nil {
+		return err
+	}
+	return jsonutils.Update(self, &newDisk)
 }
 
 func (self *SDisk) GetStatus() string {
@@ -241,7 +328,7 @@ func (self *SStorage) GetIDisks() ([]cloudprovider.ICloudDisk, error) {
 	}
 	var ret []cloudprovider.ICloudDisk
 	for i := range disks {
-		if disks[i].StorageId == self.StorageId {
+		if disks[i].StorageId == self.StorageId && disks[i].Owner == self.cluster.region.client.user {
 			disks[i].storage = self
 			ret = append(ret, &disks[i])
 		}
@@ -267,7 +354,7 @@ func (self *SRegion) GetDisk(id string) (*SDisk, error) {
 		return nil, err
 	}
 	for i := range disks {
-		if disks[i].GetGlobalId() == id {
+		if disks[i].GetGlobalId() == id && disks[i].Owner == self.client.user {
 			return &disks[i], nil
 		}
 	}
@@ -277,8 +364,15 @@ func (self *SRegion) GetDisk(id string) (*SDisk, error) {
 func (self *SStorage) CreateIDisk(conf *cloudprovider.DiskCreateConfig) (cloudprovider.ICloudDisk, error) {
 	params := map[string]string{}
 	params["VolumeName"] = conf.Name
-	params["AvailabilityZone"] = self.cluster.ClusterId
+	params["AvailabilityZone"] = conf.ZoneId
 	params["Size"] = strconv.Itoa(conf.SizeGb)
+	params["StorageId"] = self.StorageId
+	if conf.NodeId != "" {
+		params["NodeId"] = conf.NodeId
+	}
+	if conf.SnapshotId != "" {
+		params["SnapshotId"] = conf.SnapshotId
+	}
 
 	resp, err := self.cluster.region.invoke("CreateVolume", params)
 	if err != nil {
@@ -286,6 +380,7 @@ func (self *SStorage) CreateIDisk(conf *cloudprovider.DiskCreateConfig) (cloudpr
 	}
 	ret := &SDisk{}
 	_ = resp.Unmarshal(&ret)
+	ret.storage = self
 
 	return ret, nil
 }

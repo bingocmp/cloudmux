@@ -15,6 +15,11 @@
 package bingocloud
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/cloudmux/pkg/apis/compute"
@@ -39,7 +44,7 @@ type SVpc struct {
 	SubnetPolicy    string `json:"subnetPolicy"`
 	Description     string `json:"description"`
 	VpcId           string `json:"vpcId"`
-	IsPublicNetwork string `json:"isPublicNetwork"`
+	IsPublicNetwork bool   `json:"isPublicNetwork"`
 	GatewayId       string `json:"gatewayId"`
 	IsDefault       string `json:"isDefault"`
 	Provider        string `json:"provider"`
@@ -60,8 +65,23 @@ func (self *SVpc) GetName() string {
 	return self.VpcName
 }
 
+func (self *SVpc) Refresh() error {
+	newVpc, err := self.region.GetIVpcById(self.VpcId)
+	if err != nil {
+		return err
+	}
+	if newVpc != nil {
+		return jsonutils.Update(self, &newVpc)
+	}
+	return cloudprovider.ErrNotFound
+}
+
 func (self *SVpc) Delete() error {
-	return cloudprovider.ErrNotImplemented
+	params := make(map[string]string)
+	params["VpcId"] = self.VpcId
+
+	_, err := self.region.invoke("DeleteVpc", params)
+	return err
 }
 
 func (self *SVpc) GetCidrBlock() string {
@@ -84,6 +104,13 @@ func (self *SVpc) GetRegion() cloudprovider.ICloudRegion {
 	return self.region
 }
 
+func (self *SVpc) GetExternalAccessMode() string {
+	if self.GatewayId != "" {
+		return api.VPC_EXTERNAL_ACCESS_MODE_EIP
+	}
+	return api.VPC_EXTERNAL_ACCESS_MODE_NONE
+}
+
 func (self *SVpc) GetStatus() string {
 	switch self.State {
 	case "available":
@@ -93,11 +120,35 @@ func (self *SVpc) GetStatus() string {
 	}
 }
 
+func (self *SVpc) GetTags() (map[string]string, error) {
+	tags := map[string]string{}
+	if self.IsPublicNetwork {
+		tags["IsPublicNetwork"] = strconv.FormatBool(self.IsPublicNetwork)
+	}
+	if strings.ToLower(self.Shared) == "true" {
+		tags["IsShared"] = fmt.Sprintf("%v", true)
+	}
+	return tags, nil
+}
+
 func (self *SVpc) GetISecurityGroups() ([]cloudprovider.ICloudSecurityGroup, error) {
 	return []cloudprovider.ICloudSecurityGroup{}, nil
 }
 
-func (self *SRegion) GetVpcs(id string) ([]SVpc, error) {
+func (self *SRegion) GetIVpcById(id string) (cloudprovider.ICloudVpc, error) {
+	vpcs, err := self.GetIVpcs()
+	if err != nil {
+		return nil, err
+	}
+	for i := range vpcs {
+		if vpcs[i].GetGlobalId() == id {
+			return vpcs[i], nil
+		}
+	}
+	return nil, cloudprovider.ErrNotFound
+}
+
+func (self *SRegion) GetVpcById(id string) (*SVpc, error) {
 	params := map[string]string{}
 	if len(id) > 0 {
 		params["VpcId"] = id
@@ -108,12 +159,33 @@ func (self *SRegion) GetVpcs(id string) ([]SVpc, error) {
 		return nil, err
 	}
 	var vpcs []SVpc
+	resp.Unmarshal(&vpcs, "vpcSet")
 
-	return vpcs, resp.Unmarshal(&vpcs, "vpcSet")
+	return &vpcs[0], nil
+}
+
+func (self *SRegion) GetVpcs() ([]SVpc, error) {
+	params := map[string]string{}
+	resp, err := self.invoke("DescribeVpcs", params)
+	if err != nil {
+		return nil, err
+	}
+	var vpcs []SVpc
+	err = resp.Unmarshal(&vpcs, "vpcSet")
+	if err != nil {
+		return vpcs, err
+	}
+	var ret []SVpc
+	for _, vpc := range vpcs {
+		if strings.ToLower(vpc.Shared) == "true" || vpc.OwnerId == self.client.user {
+			ret = append(ret, vpc)
+		}
+	}
+	return ret, nil
 }
 
 func (self *SRegion) GetIVpcs() ([]cloudprovider.ICloudVpc, error) {
-	vpcs, err := self.GetVpcs("")
+	vpcs, err := self.GetVpcs()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetVpcs")
 	}
@@ -123,4 +195,26 @@ func (self *SRegion) GetIVpcs() ([]cloudprovider.ICloudVpc, error) {
 		ret = append(ret, &vpcs[i])
 	}
 	return ret, nil
+}
+
+func (self *SRegion) CreateVpc(opts *cloudprovider.VpcCreateOptions) (*SVpc, error) {
+	params := make(map[string]string)
+	if len(opts.CIDR) > 0 {
+		params["CidrBlock"] = opts.CIDR
+	}
+	if len(opts.NAME) > 0 {
+		params["VpcName"] = opts.NAME
+	}
+	if len(opts.Desc) > 0 {
+		params["Description"] = opts.Desc
+	}
+
+	resp, err := self.invoke("CreateVpc", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var vpc *SVpc
+	err = resp.Unmarshal(&vpc, "vpc")
+	return vpc, err
 }

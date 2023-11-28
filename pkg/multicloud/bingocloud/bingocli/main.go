@@ -97,7 +97,7 @@ func newClient(options *BaseOptions) (*bingocloud.SRegion, error) {
 			options.AccessKey,
 			options.SecretKey,
 		).Debug(options.Debug).
-			CloudproviderConfig(
+			SetCloudproviderConfig(
 				cloudprovider.ProviderConfig{
 					ProxyFunc: proxyFunc,
 				},

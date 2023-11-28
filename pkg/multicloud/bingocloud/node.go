@@ -182,7 +182,7 @@ func (node *SNode) GetIHostNics() ([]cloudprovider.ICloudHostNetInterface, error
 }
 
 func (self *SNode) GetIVMs() ([]cloudprovider.ICloudVM, error) {
-	var vms []SInstance
+	var vms []*SInstance
 	part, nextToken, err := self.cluster.region.GetInstances("", self.NodeId, MAX_RESULT, "")
 	vms = append(vms, part...)
 	for len(nextToken) > 0 {
@@ -195,7 +195,7 @@ func (self *SNode) GetIVMs() ([]cloudprovider.ICloudVM, error) {
 	var ret []cloudprovider.ICloudVM
 	for i := range vms {
 		vms[i].node = self
-		ret = append(ret, &vms[i])
+		ret = append(ret, vms[i])
 	}
 	return ret, nil
 }
@@ -208,7 +208,7 @@ func (self *SNode) GetIVMById(id string) (cloudprovider.ICloudVM, error) {
 	for i := range vms {
 		if vms[i].GetGlobalId() == id {
 			vms[i].node = self
-			return &vms[i], nil
+			return vms[i], nil
 		}
 	}
 	return nil, cloudprovider.ErrNotFound
@@ -312,41 +312,50 @@ func (self *SNode) CreateVM(desc *cloudprovider.SManagedVMCreateConfig) (cloudpr
 
 	disks := make([]SDisk, len(desc.DataDisks)+1)
 	disks[0].Size = int(img.GetSizeGB())
+	disks[0].SnapshotId = desc.SysDisk.SnapshotExternalId
+	disks[0].StorageId = desc.SysDisk.StorageExternalId
 	if desc.SysDisk.SizeGB > 0 && desc.SysDisk.SizeGB > int(img.GetSizeGB()) {
 		disks[0].Size = desc.SysDisk.SizeGB
 	}
 	for i, dataDisk := range desc.DataDisks {
 		disks[i+1].Size = dataDisk.SizeGB
+		disks[i+1].SnapshotId = dataDisk.SnapshotExternalId
+		disks[i+1].StorageId = dataDisk.StorageExternalId
 	}
 
+	var deviceNames []string
 	for i, disk := range disks {
-		var deviceName string
 		var err error
-
+		var deviceName = ""
+		var deleteOnTermination = "true"
 		if i == 0 {
-			params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.DeleteOnTermination", i+1)] = "true"
-			params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.VolumeSize", i+1)] = strconv.Itoa(disk.Size)
 			if len(img.RootDeviceName) > 0 {
 				deviceName = img.RootDeviceName
 			} else {
 				deviceName = fmt.Sprintf("/dev/vda")
 			}
 		} else {
-			params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.DeleteOnTermination", i+1)] = "true"
-			params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.VolumeSize", i+1)] = strconv.Itoa(disk.Size)
-			deviceName, err = nextDeviceName([]string{deviceName})
+			deviceName, err = nextDeviceName(deviceNames)
 			if err != nil {
 				return nil, errors.Wrap(err, "nextDeviceName")
 			}
+			deleteOnTermination = "false"
 		}
+		if disk.SnapshotId != "" {
+			params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.SnapshotId", i+1)] = disk.SnapshotId
+		}
+		params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.DeleteOnTermination", i+1)] = deleteOnTermination
+		params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.StorageId", i+1)] = disk.StorageId
+		params[fmt.Sprintf("BlockDeviceMapping.%v.Ebs.VolumeSize", i+1)] = strconv.Itoa(disk.Size)
 		params[fmt.Sprintf("BlockDeviceMapping.%v.DeviceName", i+1)] = deviceName
+		deviceNames = append(deviceNames, deviceName)
 	}
 
 	params["InstanceType"] = desc.InstanceType
 	params["Password"] = desc.Password
+	params["UserData"] = desc.UserData
 	params["NetworkInterface.1.VpcId"] = desc.ExternalVpcId
 	params["NetworkInterface.1.SubnetId"] = desc.ExternalNetworkId
-	params["AllowNodes.1"] = self.NodeId
 
 	resp, err := self.cluster.region.invoke("RunInstances", params)
 	if err != nil {
@@ -370,7 +379,7 @@ func (self *SNode) CreateVM(desc *cloudprovider.SManagedVMCreateConfig) (cloudpr
 	}
 	if len(insets) > 0 {
 		insets[0].node = self
-		return &insets[0], nil
+		return insets[0], nil
 	}
 	return nil, errors.Wrap(cloudprovider.ErrUnknown, "CreateVM")
 }

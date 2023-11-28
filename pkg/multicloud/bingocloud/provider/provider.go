@@ -67,9 +67,13 @@ func (self *SBingoCloudProviderFactory) ValidateUpdateCloudaccountCredential(ctx
 	if len(input.AccessKeySecret) == 0 {
 		return output, errors.Wrap(cloudprovider.ErrMissingParameter, "access_key_secret")
 	}
+	if len(input.Endpoint) == 0 {
+		return output, errors.Wrap(cloudprovider.ErrMissingParameter, "endpoint")
+	}
 	output = cloudprovider.SCloudaccount{
-		Account: input.AccessKeyId,
-		Secret:  input.AccessKeySecret,
+		Account:   input.AccessKeyId,
+		Secret:    input.AccessKeySecret,
+		AccessUrl: input.Endpoint,
 	}
 	return output, nil
 }
@@ -78,11 +82,25 @@ func (self *SBingoCloudProviderFactory) GetProvider(cfg cloudprovider.ProviderCo
 	client, err := bingocloud.NewBingoCloudClient(
 		bingocloud.NewBingoCloudClientConfig(
 			cfg.URL, cfg.Account, cfg.Secret,
-		).CloudproviderConfig(cfg),
+		).SetCloudproviderConfig(cfg),
 	)
 	if err != nil {
 		return nil, err
 	}
+	client.SetManagerClient(client)
+
+	if cfg.ManagerProviderConfig != nil {
+		managerClient, err := bingocloud.NewBingoCloudClient(
+			bingocloud.NewBingoCloudClientConfig(
+				cfg.ManagerProviderConfig.URL, cfg.ManagerProviderConfig.Account, cfg.ManagerProviderConfig.Secret,
+			).SetCloudproviderConfig(*cfg.ManagerProviderConfig),
+		)
+		if err != nil {
+			return nil, err
+		}
+		client.SetManagerClient(managerClient)
+	}
+
 	return &SBingoCloudProvider{
 		SBaseProvider: cloudprovider.NewBaseProvider(self),
 		client:        client,
@@ -107,6 +125,14 @@ type SBingoCloudProvider struct {
 	client *bingocloud.SBingoCloudClient
 }
 
+func (self *SBingoCloudProvider) GetProviderConfig() cloudprovider.ProviderConfig {
+	return self.client.GetCloudproviderConfig()
+}
+
+func (self *SBingoCloudProvider) SetProviderConfig(cfg cloudprovider.ProviderConfig) {
+	self.client.SetCloudproviderConfig(cfg)
+}
+
 func (self *SBingoCloudProvider) GetSysInfo() (jsonutils.JSONObject, error) {
 	return jsonutils.NewDict(), nil
 }
@@ -120,8 +146,12 @@ func (self *SBingoCloudProvider) GetSubAccounts() ([]cloudprovider.SSubAccount, 
 	return self.client.GetSubAccounts()
 }
 
-func (self *SBingoCloudProvider) CreateSubscription(cloudprovider.SubscriptionCreateInput) error {
-	return nil
+func (self *SBingoCloudProvider) CreateSubscription(input cloudprovider.SubscriptionCreateInput) error {
+	return self.client.CreateAccount(input)
+}
+
+func (self *SBingoCloudProvider) DeleteSubscription(input cloudprovider.SubscriptionDeleteInput) error {
+	return self.client.DeleteAccountTag(input.SubAccountId, "X-Project-Id")
 }
 
 func (self *SBingoCloudProvider) GetEnrollmentAccounts() ([]cloudprovider.SEnrollmentAccount, error) {

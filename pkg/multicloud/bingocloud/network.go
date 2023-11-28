@@ -88,7 +88,11 @@ func (self *SNetwork) GetName() string {
 }
 
 func (self *SNetwork) Delete() error {
-	return cloudprovider.ErrNotImplemented
+	params := make(map[string]string)
+	params["SubnetId"] = self.SubnetId
+
+	_, err := self.wire.vpc.region.invoke("DeleteSubnet", params)
+	return err
 }
 
 func (self *SNetwork) GetAllocTimeoutSeconds() int {
@@ -137,6 +141,9 @@ func (self *SNetwork) GetPublicScope() rbacscope.TRbacScope {
 }
 
 func (self *SNetwork) GetServerType() string {
+	if self.VpcIsPublic == "true" {
+		return api.NETWORK_TYPE_EIP
+	}
 	return api.NETWORK_TYPE_GUEST
 }
 
@@ -145,7 +152,20 @@ func (self *SNetwork) GetStatus() string {
 }
 
 func (self *SWire) CreateINetwork(opts *cloudprovider.SNetworkCreateOptions) (cloudprovider.ICloudNetwork, error) {
-	return nil, cloudprovider.ErrNotImplemented
+	params := map[string]string{}
+	params["VpcId"] = self.vpc.VpcId
+	params["SubnetName"] = opts.Name
+	params["CidrBlock"] = opts.Cidr
+	params["AvailabilityZone"] = self.cluster.ClusterId
+	params["Description"] = opts.Desc
+
+	resp, err := self.vpc.region.invoke("CreateSubnet", params)
+	if err != nil {
+		return nil, err
+	}
+	var network *SNetwork
+	err = resp.Unmarshal(&network, "subnet")
+	return network, err
 }
 
 func (self *SWire) GetINetworks() ([]cloudprovider.ICloudNetwork, error) {

@@ -8,17 +8,7 @@ import (
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 )
 
-var INSTANCE_CATEGORY_MAP = map[string]string{
-	"m1": "M1代",
-	"m2": "M2代",
-	"m3": "M3代",
-	"c1": "C1代",
-	"c2": "C2代",
-	"c3": "C3代",
-	"t1": "T1代",
-	"t2": "T2代",
-	"t3": "T3代",
-}
+var INSTANCE_CATEGORY_MAP = map[string]string{}
 
 func getInstanceCategory(family string) string {
 	ret, ok := INSTANCE_CATEGORY_MAP[family]

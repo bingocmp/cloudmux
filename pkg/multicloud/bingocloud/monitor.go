@@ -15,7 +15,7 @@
 package bingocloud
 
 import (
-	"fmt"
+	"strconv"
 	"time"
 
 	"yunion.io/x/log"
@@ -24,20 +24,60 @@ import (
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 )
 
+var hostMetricsMap = map[string]cloudprovider.TMetricType{
+	"CPUUtilization": cloudprovider.HOST_METRIC_TYPE_CPU_USAGE,
+	"MemeryUsage":    cloudprovider.HOST_METRIC_TYPE_MEM_USAGE,
+	"NetworkIn":      cloudprovider.HOST_METRIC_TYPE_NET_BPS_RX,
+	"NetworkOut":     cloudprovider.HOST_METRIC_TYPE_NET_BPS_TX,
+	"DiskReadBytes":  cloudprovider.HOST_METRIC_TYPE_DISK_IO_READ_BPS,
+	"DiskWriteBytes": cloudprovider.HOST_METRIC_TYPE_DISK_IO_WRITE_BPS,
+	"DiskReadOps":    cloudprovider.HOST_METRIC_TYPE_DISK_IO_READ_IOPS,
+	"DiskWriteOps":   cloudprovider.HOST_METRIC_TYPE_DISK_IO_WRITE_IOPS,
+}
+
+var vmMetricsMap = map[string]cloudprovider.TMetricType{
+	"CPUUtilization": cloudprovider.VM_METRIC_TYPE_CPU_USAGE,
+	"MemeryUsage":    cloudprovider.VM_METRIC_TYPE_MEM_USAGE,
+	"NetworkIn":      cloudprovider.VM_METRIC_TYPE_NET_BPS_RX,
+	"NetworkOut":     cloudprovider.VM_METRIC_TYPE_NET_BPS_TX,
+	"DiskUsage":      cloudprovider.VM_METRIC_TYPE_DISK_USAGE,
+	"DiskReadBytes":  cloudprovider.VM_METRIC_TYPE_DISK_IO_READ_BPS,
+	"DiskWriteBytes": cloudprovider.VM_METRIC_TYPE_DISK_IO_WRITE_BPS,
+	"DiskReadOps":    cloudprovider.VM_METRIC_TYPE_DISK_IO_READ_IOPS,
+	"DiskWriteOps":   cloudprovider.VM_METRIC_TYPE_DISK_IO_WRITE_IOPS,
+}
+
+var lbMetricsMap = map[string]cloudprovider.TMetricType{
+	"UnHealthyHostCount": cloudprovider.LB_METRIC_TYPE_UNHEALTHY_SERVER_COUNT,
+	"RequestCount":       cloudprovider.LB_METRIC_TYPE_MAX_CONNECTION,
+}
+
+var metricsMap = map[cloudprovider.TResourceType]map[string]cloudprovider.TMetricType{
+	cloudprovider.METRIC_RESOURCE_TYPE_SERVER: vmMetricsMap,
+	cloudprovider.METRIC_RESOURCE_TYPE_HOST:   hostMetricsMap,
+	cloudprovider.METRIC_RESOURCE_TYPE_LB:     lbMetricsMap,
+}
+
+var resourceTypeMap = map[cloudprovider.TResourceType]string{
+	cloudprovider.METRIC_RESOURCE_TYPE_SERVER: "Instance",
+	cloudprovider.METRIC_RESOURCE_TYPE_HOST:   "Host",
+	cloudprovider.METRIC_RESOURCE_TYPE_LB:     "LoadBalancer",
+}
+
 type MetricOutput struct {
-	Datapoints Datapoints
-	ObjName    string
-	Period     int64
+	NextToken  string
+	Datapoints []DatapointMember
 }
 
 type DatapointMember struct {
+	ResourceId  string
+	MetricName  string
 	Average     float64
 	Maximum     float64
 	Minimum     float64
 	SampleCount float64
 	Sum         float64
-	Timestamp   time.Time
-	Unit        string
+	Timestamp   string
 }
 
 func (self DatapointMember) GetValue() float64 {
@@ -48,97 +88,82 @@ type Datapoints struct {
 	Member []DatapointMember
 }
 
-func (self *SBingoCloudClient) DescribeMetricList(ns, metricNm, dimensionName, dimensionValue string, since time.Time, until time.Time) (*MetricOutput, error) {
+func (self *SBingoCloudClient) GetResourceStatistics(resourceType string, since time.Time, until time.Time) (*MetricOutput, error) {
 	params := map[string]string{}
-	params["Namespace"] = ns
-	params["MetricName"] = metricNm
-	params["Dimensions.member.1.Name"] = dimensionName
-	params["Dimensions.member.1.Value"] = dimensionValue
-	params["StartTime"] = since.UTC().Format(time.RFC3339)
-	params["EndTime"] = until.UTC().Format(time.RFC3339)
-	params["Statistics.member.1"] = "Average"
-	params["Period"] = "60"
-	resp, err := self.invoke("GetMetricStatistics", params)
-	if err != nil {
-		return nil, errors.Wrap(err, "GetMetricStatistics err")
-	}
+	params["ResourceType"] = resourceType
+	params["StartTime"] = strconv.FormatInt(since.UTC().Unix(), 10)
+	params["EndTime"] = strconv.FormatInt(until.UTC().Unix(), 10)
+
 	ret := &MetricOutput{}
-	return ret, resp.Unmarshal(ret, "GetMetricStatisticsResult")
+
+	for {
+		tmp := &MetricOutput{}
+		resp, err := self.invoke("GetResourceStatistics", params)
+		if err != nil {
+			return nil, errors.Wrap(err, "GetResourceStatistics err")
+		}
+		err = resp.Unmarshal(tmp, "GetResourceStatisticsResult")
+		if err != nil {
+			return nil, errors.Wrap(err, "GetResourceStatistics err")
+		}
+
+		ret.Datapoints = append(ret.Datapoints, tmp.Datapoints...)
+
+		if tmp.NextToken == "" {
+			break
+		}
+		params["NextToken"] = tmp.NextToken
+	}
+
+	return ret, nil
 }
 
 func (self *SBingoCloudClient) GetMetrics(opts *cloudprovider.MetricListOptions) ([]cloudprovider.MetricValues, error) {
-	if len(opts.ResourceId) == 0 {
-		return nil, fmt.Errorf("missing resourceId")
+	data, err := self.GetResourceStatistics(resourceTypeMap[opts.ResourceType], opts.StartTime, opts.EndTime)
+	if err != nil {
+		log.Errorf("GetResourceStatistics error: %v", err)
+		return nil, err
 	}
-	switch opts.ResourceType {
-	case cloudprovider.METRIC_RESOURCE_TYPE_SERVER:
-		return self.GetEcsMetrics(opts)
-	case cloudprovider.METRIC_RESOURCE_TYPE_HOST:
-		return self.GetHostMetrics(opts)
-	default:
-		return nil, errors.Wrapf(cloudprovider.ErrNotSupported, "%s", opts.ResourceType)
-	}
-}
 
-func (self *SBingoCloudClient) GetEcsMetrics(opts *cloudprovider.MetricListOptions) ([]cloudprovider.MetricValues, error) {
-	var ret []cloudprovider.MetricValues
-	for metricType, metricName := range map[cloudprovider.TMetricType]string{
-		cloudprovider.VM_METRIC_TYPE_CPU_USAGE:          "CPUUtilization",
-		cloudprovider.VM_METRIC_TYPE_MEM_USAGE:          "MemoryUsage",
-		cloudprovider.VM_METRIC_TYPE_NET_BPS_RX:         "NetworkIn",
-		cloudprovider.VM_METRIC_TYPE_NET_BPS_TX:         "NetworkOut",
-		cloudprovider.VM_METRIC_TYPE_DISK_IO_READ_BPS:   "DiskReadBytes",
-		cloudprovider.VM_METRIC_TYPE_DISK_IO_WRITE_BPS:  "DiskWriteBytes",
-		cloudprovider.VM_METRIC_TYPE_DISK_IO_READ_IOPS:  "DiskReadOps",
-		cloudprovider.VM_METRIC_TYPE_DISK_IO_WRITE_IOPS: "DiskWriteOps",
-	} {
-		data, err := self.DescribeMetricList("AWS/EC2", metricName, "InstanceId", opts.ResourceId, opts.StartTime, opts.EndTime)
-		if err != nil {
-			log.Errorf("DescribeMetricList error: %v", err)
-			continue
-		}
-		metric := cloudprovider.MetricValues{}
-		metric.Id = opts.ResourceId
-		metric.MetricType = metricType
-		for _, value := range data.Datapoints.Member {
+	var ret []*cloudprovider.MetricValues
+
+	resources := map[string]map[cloudprovider.TMetricType]*cloudprovider.MetricValues{}
+
+	if data != nil && data.Datapoints != nil {
+		for _, member := range data.Datapoints {
+			metricType := metricsMap[opts.ResourceType][member.MetricName]
+			if metricType == "" {
+				continue
+			}
+			var metric = &cloudprovider.MetricValues{
+				Id:         member.ResourceId,
+				Values:     []cloudprovider.MetricValue{},
+				MetricType: metricType,
+			}
+			if res, exist := resources[member.ResourceId]; exist {
+				if mc, exist := res[metricType]; exist {
+					metric = mc
+				} else {
+					resources[member.ResourceId][metricType] = metric
+					ret = append(ret, metric)
+				}
+			} else {
+				resources[member.ResourceId] = map[cloudprovider.TMetricType]*cloudprovider.MetricValues{metricType: metric}
+				ret = append(ret, metric)
+			}
 			metricValue := cloudprovider.MetricValue{}
-			metricValue.Timestamp = value.Timestamp
-			metricValue.Value = value.GetValue()
+
+			toInt64, _ := strconv.ParseInt(member.Timestamp, 10, 64)
+			metricValue.Timestamp = time.Unix(toInt64, 0).UTC()
+			metricValue.Value = member.Average
 			metric.Values = append(metric.Values, metricValue)
 		}
-		ret = append(ret, metric)
 	}
-	return ret, nil
-}
 
-func (self *SBingoCloudClient) GetHostMetrics(opts *cloudprovider.MetricListOptions) ([]cloudprovider.MetricValues, error) {
-	var ret []cloudprovider.MetricValues
-	for metricType, metricName := range map[cloudprovider.TMetricType]string{
-		cloudprovider.HOST_METRIC_TYPE_CPU_USAGE:          "CPUUtilization",
-		cloudprovider.HOST_METRIC_TYPE_MEM_USAGE:          "MemeryUsage",
-		cloudprovider.HOST_METRIC_TYPE_NET_BPS_RX:         "NetworkIn",
-		cloudprovider.HOST_METRIC_TYPE_NET_BPS_TX:         "NetworkOut",
-		cloudprovider.HOST_METRIC_TYPE_DISK_IO_READ_BPS:   "DiskReadBytes",
-		cloudprovider.HOST_METRIC_TYPE_DISK_IO_WRITE_BPS:  "DiskWriteBytes",
-		cloudprovider.HOST_METRIC_TYPE_DISK_IO_READ_IOPS:  "DiskReadOps",
-		cloudprovider.HOST_METRIC_TYPE_DISK_IO_WRITE_IOPS: "DiskWriteOps",
-	} {
-		data, err := self.DescribeMetricList("AWS/HOST", metricName, "HostId", opts.ResourceId, opts.StartTime, opts.EndTime)
-		if err != nil {
-			log.Errorf("DescribeMetricList error: %v", err)
-			continue
-		}
-		metric := cloudprovider.MetricValues{}
-		metric.Id = opts.ResourceId
-		metric.MetricType = metricType
-		for _, value := range data.Datapoints.Member {
-			metricValue := cloudprovider.MetricValue{}
-			metricValue.Timestamp = value.Timestamp
-			metricValue.Value = value.GetValue()
-			metric.Values = append(metric.Values, metricValue)
-		}
-		ret = append(ret, metric)
+	result := make([]cloudprovider.MetricValues, len(ret))
+	for i, p := range ret {
+		result[i] = *p
 	}
-	return ret, nil
 
+	return result, nil
 }

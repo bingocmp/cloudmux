@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/secrules"
 
@@ -32,16 +33,16 @@ type SSecurityGroup struct {
 	BingoTags
 	region *SRegion
 
-	ComplexIPPermissions       string          `json:"complexIpPermissions"`
-	ComplexIPPermissionsEgress string          `json:"complexIpPermissionsEgress"`
-	DisplayName                string          `json:"displayName"`
-	GroupDescription           string          `json:"groupDescription"`
-	GroupId                    string          `json:"groupId"`
-	GroupName                  string          `json:"groupName"`
-	IPPermissionType           string          `json:"ipPermissionType"`
-	IPPermissions              []IPPermissions `json:"ipPermissions"`
-	IPPermissionsEgress        []IPPermissions `json:"ipPermissionsEgress"`
-	OwnerId                    string          `json:"ownerId"`
+	ComplexIPPermissions       string                `json:"complexIpPermissions"`
+	ComplexIPPermissionsEgress string                `json:"complexIpPermissionsEgress"`
+	DisplayName                string                `json:"displayName"`
+	GroupDescription           string                `json:"groupDescription"`
+	GroupId                    string                `json:"groupId"`
+	GroupName                  string                `json:"groupName"`
+	IPPermissionType           string                `json:"ipPermissionType"`
+	IPPermissions              []*SSecurityGroupRule `json:"ipPermissions"`
+	IPPermissionsEgress        []*SSecurityGroupRule `json:"ipPermissionsEgress"`
+	OwnerId                    string                `json:"ownerId"`
 }
 
 func (self *SSecurityGroup) GetId() string {
@@ -57,11 +58,19 @@ func (self *SSecurityGroup) GetName() string {
 }
 
 func (self *SSecurityGroup) GetDescription() string {
-	return self.GroupDescription
+	return self.OwnerId
 }
 
 func (self *SSecurityGroup) GetProjectId() string {
 	return ""
+}
+
+func (self *SSecurityGroup) Refresh() error {
+	newest, err := self.region.GetISecurityGroupById(self.GroupId)
+	if err != nil {
+		return err
+	}
+	return jsonutils.Update(self, &newest)
 }
 
 func (self *SSecurityGroup) GetReferences() ([]cloudprovider.SecurityGroupReference, error) {
@@ -71,12 +80,14 @@ func (self *SSecurityGroup) GetReferences() ([]cloudprovider.SecurityGroupRefere
 func (self *SSecurityGroup) GetRules() ([]cloudprovider.ISecurityGroupRule, error) {
 	ret := []cloudprovider.ISecurityGroupRule{}
 	for i := range self.IPPermissionsEgress {
+		self.IPPermissionsEgress[i].group = self
 		self.IPPermissionsEgress[i].direction = secrules.DIR_OUT
-		ret = append(ret, &self.IPPermissionsEgress[i])
+		ret = append(ret, self.IPPermissionsEgress[i])
 	}
 	for i := range self.IPPermissions {
+		self.IPPermissions[i].group = self
 		self.IPPermissions[i].direction = secrules.DIR_IN
-		ret = append(ret, &self.IPPermissions[i])
+		ret = append(ret, self.IPPermissions[i])
 	}
 	return ret, nil
 }
@@ -93,14 +104,30 @@ func (self *SSecurityGroup) Delete() error {
 	return self.region.deleteSecurityGroup(self.GroupId)
 }
 
+func (self *SRegion) DeleteSecurityGroupRule(rule *SSecurityGroupRule) error {
+	params := map[string]string{
+		"GroupId":    rule.group.GroupId,
+		"CidrIp":     rule.IPRanges[0].CIDRIP,
+		"IpProtocol": rule.IPProtocol,
+		"BoundType":  rule.BoundType,
+		"Policy":     rule.Policy,
+		"FromPort":   strconv.Itoa(rule.FromPort),
+		"ToPort":     strconv.Itoa(rule.ToPort),
+	}
+	_, err := self.invoke("RevokeSecurityGroupIngress", params)
+	return err
+}
+
 func (self *SRegion) CreateSecurityGroupRules(secGrpId string, opts *cloudprovider.SecurityGroupRuleCreateOptions) error {
 	params := map[string]string{
-		"GroupId":    secGrpId,
-		"IpProtocol": "all",
-		"BoundType":  "In",
-		"Policy":     "DROP",
-		"FromPort":   "0",
-		"ToPort":     "65535",
+		"GroupId":     secGrpId,
+		"CidrIp":      opts.CIDR,
+		"IpProtocol":  "all",
+		"BoundType":   "In",
+		"Policy":      "DROP",
+		"FromPort":    "0",
+		"ToPort":      "65535",
+		"Description": opts.Desc,
 	}
 	if opts.Protocol != secrules.PROTO_ANY {
 		params["IpProtocol"] = opts.Protocol
@@ -143,27 +170,30 @@ func (self *SRegion) CreateSecurityGroupRules(secGrpId string, opts *cloudprovid
 	}
 
 	_, err := self.invoke("AuthorizeSecurityGroupIngress", params)
-	if err == nil {
-		return errors.Wrapf(err, "AuthorizeSecurityGroupIngress")
-	}
-	return nil
+	return err
 }
 
 func (self *SRegion) GetSecurityGroups(id, name, nextToken string) ([]SSecurityGroup, string, error) {
 	params := map[string]string{}
-	params["Filter.1.Name"] = "owner-id"
-	params["Filter.1.Value.1"] = self.getAccountUser()
 
 	if len(id) > 0 {
 		params["GroupId.1"] = id
 	}
-	if len(name) > 0 {
-		params["Filter.2.Name"] = "group-name"
-		params["Filter.2.Value.1"] = name
-	}
+
 	if len(nextToken) > 0 {
 		params["NextToken"] = nextToken
 	}
+
+	idx := 1
+	if len(name) > 0 {
+		params[fmt.Sprintf("Filter.%d.Name", idx)] = "group-name"
+		params[fmt.Sprintf("Filter.%d.Value.1", idx)] = name
+		idx++
+	}
+
+	params[fmt.Sprintf("Filter.%d.Name", idx)] = "owner-id"
+	params[fmt.Sprintf("Filter.%d.Value.1", idx)] = self.client.user
+	idx++
 
 	resp, err := self.invoke("DescribeSecurityGroups", params)
 	if err != nil {
@@ -208,6 +238,10 @@ func (self *SRegion) CreateISecurityGroup(opts *cloudprovider.SecurityGroupCreat
 	params := map[string]string{}
 	if len(opts.Name) > 0 {
 		params["GroupName"] = opts.Name
+		existSecgroups, _, _ := self.GetSecurityGroups("", opts.Name, "")
+		if len(existSecgroups) > 0 {
+			return &existSecgroups[0], nil
+		}
 	}
 	resp, err := self.invoke("CreateSecurityGroup", params)
 	if err != nil {
@@ -222,4 +256,36 @@ func (self *SRegion) CreateISecurityGroup(opts *cloudprovider.SecurityGroupCreat
 	}
 
 	return nil, errors.Wrap(cloudprovider.ErrUnknown, "CreateSecurityGroup")
+}
+
+func (self *SSecurityGroup) CreateRule(opts *cloudprovider.SecurityGroupRuleCreateOptions) (cloudprovider.ISecurityGroupRule, error) {
+	oldRules, err := self.GetRules()
+	if err != nil {
+		return nil, err
+	}
+	err = self.region.CreateSecurityGroupRules(self.GroupId, opts)
+	if err != nil {
+		return nil, err
+	}
+	group, err := self.region.GetISecurityGroupById(self.GroupId)
+	if err != nil {
+		return nil, err
+	}
+	newRules, err := group.GetRules()
+	if err != nil {
+		return nil, err
+	}
+	for _, new := range newRules {
+		exist := false
+		for _, old := range oldRules {
+			if old.GetGlobalId() == new.GetGlobalId() {
+				exist = true
+				break
+			}
+		}
+		if !exist {
+			return new, nil
+		}
+	}
+	return nil, nil
 }

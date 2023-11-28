@@ -45,6 +45,17 @@ const (
 	MAX_RESULT = 20
 )
 
+var (
+	ManagerActions = []string{
+		"DescribeNodes",
+		"DescribePhysicalHosts",
+		"DescribeClusters",
+		"DescribeAvailabilityZones",
+		"DescribeStorages",
+		"DescribeVpcs",
+	}
+)
+
 type BingoCloudConfig struct {
 	cpcfg     cloudprovider.ProviderConfig
 	endpoint  string
@@ -63,9 +74,13 @@ func NewBingoCloudClientConfig(endpoint, accessKey, secretKey string) *BingoClou
 	return cfg
 }
 
-func (cfg *BingoCloudConfig) CloudproviderConfig(cpcfg cloudprovider.ProviderConfig) *BingoCloudConfig {
+func (cfg *BingoCloudConfig) SetCloudproviderConfig(cpcfg cloudprovider.ProviderConfig) *BingoCloudConfig {
 	cfg.cpcfg = cpcfg
 	return cfg
+}
+
+func (cfg *BingoCloudConfig) GetCloudproviderConfig() cloudprovider.ProviderConfig {
+	return cfg.cpcfg
 }
 
 func (cfg *BingoCloudConfig) Debug(debug bool) *BingoCloudConfig {
@@ -77,23 +92,31 @@ type SBingoCloudClient struct {
 	*BingoCloudConfig
 
 	regions []SRegion
+
+	managerClient *SBingoCloudClient
+
+	user string
 }
 
 func NewBingoCloudClient(cfg *BingoCloudConfig) (*SBingoCloudClient, error) {
 	client := &SBingoCloudClient{BingoCloudConfig: cfg}
-	var err error
-	client.regions, err = client.GetRegions()
-	if err != nil {
-		return nil, err
+	client.regions, _ = client.GetRegions()
+	if client.regions != nil {
+		for i := range client.regions {
+			client.regions[i].client = client
+		}
 	}
-	for i := range client.regions {
-		client.regions[i].client = client
-	}
+	client.user = client.getAccountUser()
 	return client, nil
 }
 
+func (self *SBingoCloudClient) SetManagerClient(client *SBingoCloudClient) {
+	self.regions = client.regions
+	self.managerClient = client
+}
+
 func (self *SBingoCloudClient) GetAccountId() string {
-	return self.endpoint
+	return self.accessKey
 }
 
 func (self *SBingoCloudClient) GetRegion(id string) (*SRegion, error) {
@@ -146,8 +169,13 @@ func setItemToArray(obj jsonutils.JSONObject) jsonutils.JSONObject {
 			}
 			vDict, ok := v.(*jsonutils.JSONDict)
 			if ok {
-				if vDict.Contains("item") {
-					item, _ := vDict.Get("item")
+				if vDict.Contains("item") || vDict.Contains("member") {
+					var item jsonutils.JSONObject
+					if vDict.Contains("item") {
+						item, _ = vDict.Get("item")
+					} else if vDict.Contains("member") {
+						item, _ = vDict.Get("member")
+					}
 					_, ok := item.(*jsonutils.JSONArray)
 					if !ok {
 						if k != "instancesSet" {
@@ -191,7 +219,7 @@ func setItemToArray(obj jsonutils.JSONObject) jsonutils.JSONObject {
 		}
 		return jsonutils.NewArray(arr...)
 	}
-	return objDict
+	return obj
 }
 
 type sBingoError struct {
@@ -289,20 +317,36 @@ func (self *SBingoCloudClient) GetSubAccounts() ([]cloudprovider.SSubAccount, er
 
 	filter := map[string]string{}
 	filter["resource-type"] = "user"
-	filter["key"] = "ProjectID"
+	filter["key"] = "X-Project-Id"
 	result, err := self.describeTags(filter)
 	if err != nil {
 		return nil, err
 	}
 	_ = result.Unmarshal(&tags, "tagSet")
 
-	var subAccounts []cloudprovider.SSubAccount
+	var subAccounts = []cloudprovider.SSubAccount{{
+		Id:           self.getAccountUser(),
+		Account:      self.accessKey,
+		Secret:       self.secretKey,
+		Name:         self.cpcfg.Name,
+		IsSubAccount: false,
+		HealthStatus: api.CLOUD_PROVIDER_HEALTH_NORMAL,
+	}}
+
 	for i := range tags {
+		account, err := self.listAccessKeys(tags[i].ResourceId)
+		if err != nil {
+			continue
+		}
+		ak, sk := account.decryptKeys(self.secretKey)
 		subAccount := cloudprovider.SSubAccount{
-			Account:          self.accessKey,
-			Name:             tags[i].ResourceId,
-			DefaultProjectId: tags[i].Value,
+			Id:               account.UserId,
+			Name:             account.UserName,
 			HealthStatus:     api.CLOUD_PROVIDER_HEALTH_NORMAL,
+			Account:          ak,
+			Secret:           sk,
+			IsSubAccount:     true,
+			DefaultProjectId: tags[i].Value,
 		}
 		subAccounts = append(subAccounts, subAccount)
 	}
@@ -310,42 +354,7 @@ func (self *SBingoCloudClient) GetSubAccounts() ([]cloudprovider.SSubAccount, er
 }
 
 func (self *SBingoCloudClient) GetEnrollmentAccounts() ([]cloudprovider.SEnrollmentAccount, error) {
-	params := map[string]string{"Marker": "", "MaxItems": "1000", "AccountName": "paas_app"}
-	var result struct {
-		IsTruncated string
-		Marker      string `json:"marker,omitempty"`
-		Users       struct {
-			Member *SAccount `json:"member,omitempty"`
-		}
-	}
-	var eas []cloudprovider.SEnrollmentAccount
-	for {
-		resp, err := self.invoke("ListAccounts", params)
-		if err != nil {
-			return nil, err
-		}
-		err = resp.Unmarshal(&result, "ListAccountsResult")
-		if err != nil {
-			return nil, err
-		}
-		ea := cloudprovider.SEnrollmentAccount{
-			Id:   result.Users.Member.UserId,
-			Name: result.Users.Member.UserName,
-		}
-		eas = append(eas, ea)
-		//for _, user := range result.Users.Member {
-		//	ea := cloudprovider.SEnrollmentAccount{
-		//		Id:   user.UserId,
-		//		Name: user.UserName,
-		//	}
-		//	eas = append(eas, ea)
-		//}
-		if params["Marker"] == result.Marker {
-			break
-		}
-		params["Marker"] = result.Marker
-	}
-	return eas, nil
+	return nil, nil
 }
 
 func (self *SBingoCloudClient) GetIRegions() []cloudprovider.ICloudRegion {
@@ -357,6 +366,44 @@ func (self *SBingoCloudClient) GetIRegions() []cloudprovider.ICloudRegion {
 	return ret
 }
 
+func (self *SBingoCloudClient) listAccessKeys(userName string) (*SAccount, error) {
+	params := map[string]string{"Marker": "", "MaxItems": "1000", "UserName": userName}
+
+	resp, err := self.managerClient.invoke("ListAccessKeys", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var accounts []*SAccount
+	err = resp.Unmarshal(&accounts, "ListAccessKeysResult", "AccessKeyMetadata")
+	if err != nil {
+		return nil, err
+	}
+
+	return accounts[0], nil
+}
+
+func (self *SBingoCloudClient) getAccountUser() string {
+	quotas, err := self.getQuotas()
+	if err != nil {
+		return ""
+	}
+	ownerId := ""
+	if len(quotas) > 0 {
+		ownerId = quotas[0].OwnerId
+	}
+	return ownerId
+}
+
+func (self *SBingoCloudClient) getQuotas() ([]SQuotas, error) {
+	resp, err := self.invoke("DescribeQuotas", nil)
+	if err != nil {
+		return nil, err
+	}
+	var ret []SQuotas
+	return ret, resp.Unmarshal(&ret, "quotaSet")
+}
+
 func (self *SBingoCloudClient) describeTags(filter map[string]string) (jsonutils.JSONObject, error) {
 	params := map[string]string{"MaxResults": "10000"}
 	i := 1
@@ -366,6 +413,55 @@ func (self *SBingoCloudClient) describeTags(filter map[string]string) (jsonutils
 		i++
 	}
 	return self.invoke("DescribeTags", params)
+}
+
+func (self *SBingoCloudClient) CreateAccount(input cloudprovider.SubscriptionCreateInput) error {
+	params := map[string]string{}
+
+	account, _ := self.listAccessKeys(input.SubAccountId)
+	if account == nil {
+		params["AccountId"] = input.SubAccountId
+		params["AccountName"] = input.SubAccountName
+		_, err := self.managerClient.invoke("CreateAccount", params)
+		if err != nil {
+			return err
+		}
+
+		params = map[string]string{}
+		params["AccountId"] = input.SubAccountId
+		params["RoleName"] = "allow_all"
+		_, err = self.managerClient.invoke("AddRoleToAccount", params)
+		if err != nil {
+			return err
+		}
+	}
+
+	params = map[string]string{}
+	params["ResourceId.1"] = input.SubAccountId
+	params["ResourceType"] = "user"
+	params["Tag.1.Key"] = "X-Project-Id"
+	params["Tag.1.Value"] = input.DefaultProject
+	_, err := self.managerClient.invoke("CreateTags", params)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+func (self *SBingoCloudClient) DeleteAccountTag(accountId, tagKey string) error {
+	params := map[string]string{}
+
+	params = map[string]string{}
+	params["ResourceId.1"] = accountId
+	params["ResourceType"] = "user"
+	params["Tag.1.Key"] = tagKey
+	_, err := self.managerClient.invoke("DeleteTags", params)
+	if err != nil {
+		return err
+	}
+
+	return err
 }
 
 func (self *SBingoCloudClient) GetIRegionById(id string) (cloudprovider.ICloudRegion, error) {

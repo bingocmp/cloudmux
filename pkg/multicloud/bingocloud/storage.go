@@ -77,7 +77,7 @@ func (self *SStorage) GetStorageType() string {
 }
 
 func (self *SStorage) GetMediumType() string {
-	return api.DISK_TYPE_SSD
+	return api.DISK_TYPE_ROTATE
 }
 
 func (self *SStorage) GetCapacityMB() int64 {
@@ -97,6 +97,10 @@ func (self *SStorage) GetStatus() string {
 }
 
 func (self *SStorage) GetStorageConf() jsonutils.JSONObject {
+	self.ParameterSet = append(self.ParameterSet, struct {
+		Name  string
+		Value string
+	}{Name: "usedBy", Value: self.UsedBy})
 	return jsonutils.Marshal(self.ParameterSet)
 }
 
@@ -106,6 +110,19 @@ func (self *SStorage) GetEnabled() bool {
 
 func (self *SStorage) IsSysDiskStore() bool {
 	return true
+}
+
+func (self *SRegion) GetIStorages() ([]cloudprovider.ICloudStorage, error) {
+	storages, err := self.getStorages()
+	if err != nil {
+		return nil, err
+	}
+	var ret []cloudprovider.ICloudStorage
+	for i := range storages {
+		storages[i].cluster = &SCluster{region: self}
+		ret = append(ret, &storages[i])
+	}
+	return ret, nil
 }
 
 func (self *SRegion) GetStorages(nextToken string) ([]SStorage, string, error) {
@@ -123,6 +140,13 @@ func (self *SRegion) GetStorages(nextToken string) ([]SStorage, string, error) {
 		StorageSet []SStorage
 	}{}
 	_ = resp.Unmarshal(&ret)
+
+	//var ret []SStorage
+	//for i := range ret.StorageSet {
+	//	if strings.ContainsAny(ret.StorageSet[i].UsedBy, "") {
+	//		ret = append(ret,ret.)
+	//	}
+	//}
 
 	return ret.StorageSet, ret.NextToken, nil
 }
