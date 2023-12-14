@@ -39,6 +39,8 @@ type SecurityGroupRule struct {
 	SecurityGroupId string
 	TenantId        string
 	Priority        int
+	Action          string
+	Multiport       string
 }
 
 func (self *SecurityGroupRule) GetGlobalId() string {
@@ -61,7 +63,7 @@ func (self *SecurityGroupRule) GetPriority() int {
 }
 
 func (self *SecurityGroupRule) GetAction() secrules.TSecurityRuleAction {
-	return secrules.SecurityRuleAllow
+	return secrules.TSecurityRuleAction(self.Action)
 }
 
 func (self *SecurityGroupRule) GetProtocol() string {
@@ -77,6 +79,8 @@ func (self *SecurityGroupRule) GetPorts() string {
 			return fmt.Sprintf("%d", self.PortRangeMax)
 		}
 		return fmt.Sprintf("%d-%d", self.PortRangeMin, self.PortRangeMax)
+	} else if self.Multiport != "" {
+		return self.Multiport
 	}
 	return ""
 }
@@ -86,7 +90,7 @@ type SPageInfo struct {
 }
 
 func (self *SecurityGroupRule) GetCIDRs() []string {
-	ip := self.RemoteIPPrefix + self.RemoteGroupId
+	ip := self.RemoteIPPrefix
 	if len(ip) == 0 {
 		ip = "0.0.0.0"
 		if self.Ethertype == "IPv6" {
