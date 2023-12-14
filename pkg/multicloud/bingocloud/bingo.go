@@ -99,14 +99,23 @@ type SBingoCloudClient struct {
 }
 
 func NewBingoCloudClient(cfg *BingoCloudConfig) (*SBingoCloudClient, error) {
+	var err error
 	client := &SBingoCloudClient{BingoCloudConfig: cfg}
-	client.regions, _ = client.GetRegions()
+	if !client.isAccessible() {
+		return nil, errors.Errorf("endpoint `%s` is not accessible", client.endpoint)
+	}
+
+	client.regions, err = client.GetRegions()
+	if err != nil {
+		return nil, err
+	}
 	if client.regions != nil {
 		for i := range client.regions {
 			client.regions[i].client = client
 		}
 	}
 	client.user = client.getAccountUser()
+
 	return client, nil
 }
 
@@ -236,6 +245,14 @@ type sBingoError struct {
 
 func (e sBingoError) Error() string {
 	return jsonutils.Marshal(e.Response.Errors.Error).String()
+}
+
+func (self *SBingoCloudClient) isAccessible() bool {
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+	_, err := client.Get(self.endpoint)
+	return err == nil
 }
 
 func (self *SBingoCloudClient) invoke(action string, params map[string]string) (jsonutils.JSONObject, error) {
