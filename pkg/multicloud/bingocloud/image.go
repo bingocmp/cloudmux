@@ -117,7 +117,7 @@ func (self *SImage) Refresh() error {
 
 func (i *SImage) getNormalizedImageInfo() *imagetools.ImageInfo {
 	if i.imageInfo == nil {
-		imgInfo := imagetools.NormalizeImageInfo(i.OSName, i.Architecture, i.Platform, "", "")
+		imgInfo := imagetools.NormalizeImageInfo(i.OSName, i.Architecture, i.Platform, i.Platform, "")
 		i.imageInfo = &imgInfo
 	}
 	return i.imageInfo
