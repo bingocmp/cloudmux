@@ -542,6 +542,10 @@ func (self *SRegion) vpcGet(resource string) (jsonutils.JSONObject, error) {
 	return self.client.vpcGet(self.ID, resource)
 }
 
+func (self *SRegion) vpcGetV3(resource string) (jsonutils.JSONObject, error) {
+	return self.client.vpcGetV3(self.ID, resource)
+}
+
 func (self *SRegion) vpcDelete(resource string) (jsonutils.JSONObject, error) {
 	return self.client.vpcDelete(self.ID, resource)
 }

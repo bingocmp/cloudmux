@@ -168,7 +168,12 @@ func (self *SEipAddress) GetPort() *Port {
 
 func (self *SEipAddress) GetAssociationType() string {
 	if len(self.PortId) == 0 {
-		return ""
+		// 独享ELB
+		if self.Status == "ELB" {
+			return api.EIP_ASSOCIATE_TYPE_LOADBALANCER
+		} else {
+			return ""
+		}
 	}
 	port, err := self.region.GetPort(self.PortId)
 	if err != nil {
@@ -191,6 +196,15 @@ func (self *SEipAddress) GetAssociationType() string {
 }
 
 func (self *SEipAddress) GetAssociationExternalId() string {
+	// 独享ELB V3接口
+	if self.PortId == "" && self.Status == "ELB" {
+		result, err := self.region.vpcGetV3("publicips/" + self.ID)
+		if err != nil {
+			return ""
+		}
+		portId, _ := result.GetString("publicip", "associate_instance_id")
+		return portId
+	}
 	// network/0273a359d61847fc83405926c958c746/ext-floatingips?tenantId=0273a359d61847fc83405926c958c746&limit=2000
 	// 只能通过 port id 反查device id.
 	if len(self.PortId) > 0 {
@@ -410,6 +424,7 @@ func (self *SEipAddress) GetProjectId() string {
 }
 
 func (self *SRegion) GetEips(portId string, addrs []string) ([]SEipAddress, error) {
+	self.client.Debug(true)
 	query := url.Values{}
 	for _, addr := range addrs {
 		query.Add("public_ip_address", addr)

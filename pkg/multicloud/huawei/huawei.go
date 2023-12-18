@@ -374,6 +374,11 @@ func (self *SHuaweiClient) vpcGet(regionId, resource string) (jsonutils.JSONObje
 	return self.request(httputils.GET, uri, url.Values{}, nil)
 }
 
+func (self *SHuaweiClient) vpcGetV3(regionId, resource string) (jsonutils.JSONObject, error) {
+	uri := fmt.Sprintf("https://vpc.%s.myhuaweicloud.com/v3/%s/eip/%s", regionId, self.projectId, resource)
+	return self.request(httputils.GET, uri, url.Values{}, nil)
+}
+
 func (self *SHuaweiClient) vpcDelete(regionId, resource string) (jsonutils.JSONObject, error) {
 	uri := fmt.Sprintf("https://vpc.%s.myhuaweicloud.com/v1/%s/%s", regionId, self.projectId, resource)
 	return self.request(httputils.DELETE, uri, url.Values{}, nil)
